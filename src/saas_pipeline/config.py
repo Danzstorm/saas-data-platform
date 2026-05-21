@@ -5,11 +5,10 @@ Merge precedence (lowest → highest): base → env/<env> → tenants/<tenant> �
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
-
-import os
 
 _ENV_OVERRIDE = os.environ.get("SAAS_CONFIG_DIR")
 CONFIG_DIR_DEFAULT = (
