@@ -55,6 +55,9 @@ def _filter_to_tenant_and_range(
     dedicated ``fecha_proceso=__invalid__`` synthetic partition so Silver can pick
     them up later and quarantine them. Range filtering applies only to valid dates.
     """
+    # The entrypoint disables ANSI mode on Databricks so ``to_date`` returns
+    # NULL on invalid strings ('20250230', etc.) instead of throwing. Same
+    # behaviour as local Spark, single source of truth.
     parsed = F.to_date(F.col("fecha_proceso"), "yyyyMMdd")
     is_invalid_date = parsed.isNull()
     in_range = (parsed >= F.lit(start_date_iso)) & (parsed <= F.lit(end_date_iso))

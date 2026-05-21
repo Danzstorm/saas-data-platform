@@ -1,10 +1,16 @@
 """Databricks job entrypoint.
 
-Mirrors what ``cli.py`` does but uses the existing Spark session injected by the
-Databricks runtime (no local SparkSession builder, no Delta-pip install). The
-runtime already provides PySpark 3.5 and Delta Lake.
+The orchestration loop lives in ``saas_pipeline.pipeline.run_all`` — this file
+only handles what's specific to Databricks:
 
-Invoked by the DAB job as a ``spark_python_task``.
+1. ``__file__`` doesn't exist under ipykernel (serverless wraps the script);
+   fall back to ``sys.argv[0]`` and add the package's parent to ``sys.path``.
+2. The runtime already ships PySpark + Delta — don't try to ``pip-install``
+   Delta extensions on top.
+3. Databricks runs ANSI=on by default; turn it off so ``to_date`` returns NULL
+   on invalid strings instead of raising. Single source of truth with local.
+4. Config files live next to ``src/`` in the deployed layout — point
+   ``SAAS_CONFIG_DIR`` at them.
 """
 
 from __future__ import annotations
@@ -16,11 +22,10 @@ from pathlib import Path
 
 
 def _bootstrap_paths() -> Path:
-    """Return the source directory containing the ``saas_pipeline`` package.
+    """Locate the source directory and wire it into ``sys.path``.
 
-    Databricks serverless runs ``spark_python_task`` files through an ipykernel
-    wrapper where ``__file__`` is not defined. We fall back to ``sys.argv[0]``
-    (the script's invoked path) and walk up one directory.
+    Under Databricks serverless ``__file__`` is undefined; we fall back to
+    ``sys.argv[0]``.
     """
     if "__file__" in globals():
         here = Path(globals()["__file__"]).resolve()
@@ -29,7 +34,6 @@ def _bootstrap_paths() -> Path:
     src_dir = here.parent.parent
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
-    # Config directory lives next to src/ in our deployed layout.
     if "SAAS_CONFIG_DIR" not in os.environ:
         candidate = src_dir.parent / "config"
         if candidate.exists():
@@ -41,8 +45,8 @@ _bootstrap_paths()
 
 from pyspark.sql import SparkSession  # noqa: E402
 
-from saas_pipeline import bronze, gold, quality, silver  # noqa: E402
-from saas_pipeline.config import list_known_tenants, load_config  # noqa: E402
+from saas_pipeline import pipeline  # noqa: E402
+from saas_pipeline.config import load_config  # noqa: E402
 from saas_pipeline.utils import new_run_id  # noqa: E402
 
 
@@ -68,37 +72,17 @@ def main() -> None:
     }
     cfg = load_config(env=args.env, tenant=None, overrides=overrides)
 
-    # Reuse the runtime's session (do NOT pip-install Delta or wire extensions).
     spark = SparkSession.builder.getOrCreate()
+    # Match local Spark semantics: ``to_date`` returns NULL on invalid strings.
+    spark.conf.set("spark.sql.ansi.enabled", "false")
+
     run_id = new_run_id()
     print(f"[run] {run_id} env={args.env} layer={args.layer} tenant={args.tenant}")
 
-    tenants = list_known_tenants(cfg) if args.tenant == "all" else [args.tenant.lower()]
-    failures: list[tuple[str, str]] = []
-
-    for t in tenants:
-        try:
-            print(f"=== tenant: {t} ===")
-            if args.layer in {"bronze", "all"}:
-                bronze.run(spark, cfg, tenant=t, run_id=run_id)
-            if args.layer in {"silver", "all"}:
-                silver.run_dim_materials(spark, cfg, tenant=t, run_id=run_id)
-                silver.run_fact_deliveries(spark, cfg, tenant=t, run_id=run_id)
-                quality.run_silver_checks(spark, cfg, tenant=t, run_id=run_id)
-            if args.layer in {"gold", "all"}:
-                if quality.critical_failed(spark, cfg, tenant=t, run_id=run_id):
-                    msg = f"Critical DQ failed for tenant={t}; skipping Gold."
-                    if cfg.quality.fail_on_critical:
-                        raise RuntimeError(msg)
-                    print(msg)
-                else:
-                    gold.run_daily_metrics(spark, cfg, tenant=t, run_id=run_id)
-                    gold.run_top_materials_by_month(spark, cfg, tenant=t, run_id=run_id)
-        except Exception as e:  # noqa: BLE001
-            print(f"[error] tenant {t}: {e}")
-            failures.append((t, str(e)))
-            if cfg.execution.fail_fast:
-                break
+    failures = pipeline.run_all(
+        spark, cfg,
+        layer=args.layer, tenant=args.tenant, run_id=run_id,
+    )
 
     if failures:
         print(f"[failures] {failures}")

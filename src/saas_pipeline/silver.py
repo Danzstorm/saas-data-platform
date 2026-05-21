@@ -105,6 +105,7 @@ def _read_bronze(spark: SparkSession, cfg: DictConfig, tenant: str) -> DataFrame
 
 def _classify_anomalies(df: DataFrame, valid_types: list[str]) -> DataFrame:
     """Tag each row with the first applicable anomaly reason (or null = clean)."""
+    # See bronze.py: try_to_date for Databricks ANSI-mode compatibility.
     parsed_date = F.to_date(F.col("fecha_proceso"), "yyyyMMdd")
     reason = (
         F.when(

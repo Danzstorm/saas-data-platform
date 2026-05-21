@@ -18,9 +18,17 @@ from omegaconf import DictConfig
 _REMOTE_PREFIXES = ("dbfs:/", "abfss:/", "s3:/", "gs:/")
 
 
+def _is_posix_absolute(p: str) -> bool:
+    """``True`` for paths like ``/Volumes/...`` that must keep forward slashes
+    even on Windows (otherwise pathlib normalises to backslashes and Spark
+    won't read them as Unity Catalog volume URIs).
+    """
+    return p.startswith("/") and not p.startswith("//")
+
+
 def _join(base: str, *parts: str) -> str:
-    """Path-style join that preserves remote URI prefixes."""
-    if base.startswith(_REMOTE_PREFIXES):
+    """Path-style join that preserves remote URI prefixes and POSIX volume paths."""
+    if base.startswith(_REMOTE_PREFIXES) or _is_posix_absolute(base):
         return "/".join([base.rstrip("/"), *(p.strip("/") for p in parts)])
     return str(Path(base, *parts))
 

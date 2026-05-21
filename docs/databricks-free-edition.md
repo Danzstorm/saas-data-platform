@@ -215,57 +215,227 @@ Mientras tanto, el camino de los pasos 3-5 es equivalente y produce el mismo res
 
 ---
 
-## 7. Resultados de la corrida en Free Edition
+## 7. Constraints de Free Edition que conviene tener presentes
 
-> Esta sección se completa con datos reales una vez que el job termina exitosamente.
+Free Edition no es una versión "reducida del cluster"; es una versión **sin clusters**. Todo es serverless y trae limitaciones reales que el código tiene que respetar:
 
-### Tablas Delta generadas
+| Limitación | Implicancia en el código |
+|---|---|
+| **Sólo serverless compute** (no se pueden crear clusters dedicados) | Los Jobs usan `environment_key` con `spec.client="2"`, no `existing_cluster_id` ni `new_cluster`. |
+| **Spark Connect bajo el capó** | La API RDD **no está implementada**. Usar sólo DataFrame API. En este proyecto se reemplazó `df.rdd.isEmpty()` por `df.limit(1).count() == 0`. |
+| **`__file__` no definido en `spark_python_task`** | El runtime envuelve el script en un ipykernel. Hay que fallback a `sys.argv[0]`. |
+| **No `OPTIMIZE` / `VACUUM` manuales eficientes** | Predictive Optimization de UC los maneja automáticamente para tablas managed. Para Delta sobre paths de volumen no hay equivalente — vivir con la fragmentación o programar mantenimiento manual. |
+| **Volumes en path POSIX** | `/Volumes/<catalog>/<schema>/<volume>/...` y NO `dbfs:/Volumes/...`. DBFS está deprecado para UC Volumes. |
+| **Quotas de DBU / storage** | Limitadas (suficientes para este demo). En productivo se usa pago — Free Edition es para desarrollo y pruebas. |
+| **No "All-Purpose" notebooks pegados a un cluster propio** | Sólo notebooks contra el serverless SQL warehouse o el serverless compute pool. Suficiente para este pipeline. |
+| **Auto-stop del SQL warehouse** | 10 minutos por defecto. Hay que arrancarlo antes de cada batch de SQL setup. |
+| **Bundle DAB (`databricks.yml`)** | A la fecha (CLI v0.296) hay un bug upstream con el download de Terraform (`openpgp: key expired`). Workaround: subir vía `workspace import --file` + crear job con `jobs create` (este documento, paso 3-5). |
 
-```sql
--- Conteo de filas por capa
-SELECT 'bronze' AS layer, COUNT(*) AS rows FROM delta.`dbfs:/Volumes/saas_dev/shared/data/bronze/pe/deliveries`
-UNION ALL
-SELECT 'silver_fact', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/silver/pe/fact_deliveries`
-UNION ALL
-SELECT 'silver_dim', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/silver/pe/dim_materials`
-UNION ALL
-SELECT 'silver_quarantine', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/silver_quarantine/pe/fact_deliveries`
-UNION ALL
-SELECT 'gold_daily', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/gold/pe/daily_metrics_by_delivery_type`
-UNION ALL
-SELECT 'gold_top_materials', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/gold/pe/top_materials_by_month`
-UNION ALL
-SELECT 'quality_logs', COUNT(*) FROM delta.`dbfs:/Volumes/saas_dev/shared/data/shared/quality_logs`;
+Lo importante es que **la lógica del pipeline no cambia** — los workarounds son todos en la capa de orchestration / IO, no en `bronze.py` / `silver.py` / `gold.py` / `quality.py`.
+
+---
+
+## 8. Resultados de la corrida en Free Edition
+
+Run real: `229721693750716` · tenant `pe` · rango `2025-01-01..2025-06-30` · `SUCCESS` en ~30 segundos de ejecución efectiva (excluye queue/cold start del serverless).
+
+### Logs del job
+
+```
+[run] run_20260521_184629_5d2e178c env=databricks layer=all tenant=pe
+=== tenant: pe ===
+[bronze:pe] wrote /Volumes/saas_dev/shared/data/bronze/pe/deliveries
+[silver:dim_materials:pe] initial write -> /Volumes/saas_dev/shared/data/silver/pe/dim_materials
+[silver:fact_deliveries:pe] {'total_input': 300, 'discarded_invalid_type': 24, 'quarantined': 9, 'persisted': 267}
+[gold:daily_metrics:pe] wrote /Volumes/saas_dev/shared/data/gold/pe/daily_metrics_by_delivery_type
+[gold:top_materials:pe] wrote /Volumes/saas_dev/shared/data/gold/pe/top_materials_by_month
+[done] pipeline finished
 ```
 
-### Métricas Gold de PE
+### Conteo de filas por tabla (verificado via SQL)
+
+| Tabla | Filas |
+|---|---|
+| `bronze/pe/deliveries` | **300** |
+| `silver/pe/fact_deliveries` | **267** |
+| `silver/pe/dim_materials` | **35** (SCD2 con versiones) |
+| `silver_quarantine/pe/fact_deliveries` | **9** |
+| `gold/pe/daily_metrics_by_delivery_type` | **101** (1 fila por fecha × tipo_entrega) |
+| `gold/pe/top_materials_by_month` | **60** (10 SKU × 6 meses) |
+| `shared/quality_logs` | **4** (4 checks × 1 tenant) |
+
+**Idéntico al run local** — el código del pipeline es 100% portable entre local y Databricks. La única diferencia es `paths.bronze`/`silver`/`gold` apuntando a `/Volumes/...` vs filesystem.
+
+### Quality logs — los 4 checks pasaron
+
+| check_name | severity | checked | failed | passed |
+|---|---|---|---|---|
+| `silver_cantidad_positive` | critical | 267 | 0 | ✅ |
+| `silver_no_orphan_in_fact` | critical | 267 | 0 | ✅ |
+| `silver_revenue_non_negative` | warning | 267 | 0 | ✅ |
+| `silver_dim_one_current_per_material` | warning | 28 | 0 | ✅ |
+
+> El check de `dim_one_current` chequea 28 materiales distintos (filas únicas por SKU); el catálogo tiene 35 versiones SCD2 porque varios SKUs tienen historial.
+
+### Cuarentena — anomalías reales detectadas
+
+| `_quarantine_reason` | Filas |
+|---|---|
+| `invalid_cantidad` (cantidad nula, 0 o negativa) | 5 |
+| `invalid_fecha_proceso` (fecha nula o inválida tipo `20250230`) | 2 |
+| `orphan_material` (material no en catálogo, ej. `XX913574`) | 2 |
+| **Total cuarentena** | **9** |
+
+Más los **24 descartes** silenciosos de `tipo_entrega ∉ {ZPRE, ZVE1, Z04, Z05}` (COBR, Z99). Total anomalías = 33/300 = 11%.
+
+### Gold #1 — daily_metrics_by_delivery_type (muestra)
+
+Las primeras 10 filas:
+
+| fecha_proceso | tipo_entrega | total_units | total_revenue | active_routes | active_transports |
+|---|---|---|---|---|---|
+| 20250107 | Z04 | 560 | $26 123.80 | 1 | 1 |
+| 20250107 | Z05 | 440 | $19 935.40 | 2 | 2 |
+| 20250107 | ZPRE | 4 689 | $224 792.53 | 4 | 3 |
+| 20250112 | Z05 | 3 657 | $100 532.81 | 4 | 4 |
+| 20250112 | ZPRE | 5 191 | $167 779.79 | 4 | 4 |
+| 20250112 | ZVE1 | 2 400 | $90 248.54 | 2 | 2 |
+| 20250113 | Z04 | 8 403 | $390 599.14 | 5 | 4 |
+| 20250113 | Z05 | 2 340 | $68 359.72 | 1 | 1 |
+| 20250113 | ZPRE | 86 | $2 105.13 | 2 | 1 |
+| 20250114 | Z04 | 2 657 | $57 939.84 | 3 | 2 |
+
+> `total_revenue` usa el **precio de la transacción** (no `precio_base` del catálogo) — la métrica refleja lo realmente facturado, no la lista de precios vigente.
+
+### Gold #2 — top_materials_by_month (marzo 2025)
+
+| rank | material | descripcion | categoria | total_units | total_revenue |
+|---|---|---|---|---|---|
+| 1 | CA022001 | Jugo Naranja 1L | JUGOS | 11 220 | $509 029.51 |
+| 2 | DA030002 | Energizante Sugar Free | ENERGETICOS | 4 145 | $241 126.47 |
+| 3 | HA070002 | Cerveza Light 355ml | BEBIDAS_ALCOHOLICAS | 4 940 | $214 680.19 |
+| 4 | DA030001 | Energizante Original | ENERGETICOS | 2 940 | $171 119.08 |
+| 5 | AA005102 | Toronja 600ml | BEBIDAS_GASEOSAS | 3 966 | $126 905.52 |
+| 6 | AA005101 | Naranja 600ml | BEBIDAS_GASEOSAS | 2 980 | $95 974.80 |
+| 7 | FA050010 | Snack Mani Salado | SNACKS | 4 820 | $92 651.95 |
+| 8 | DA030003 | Energizante Tropical | ENERGETICOS | 1 500 | $85 053.87 |
+| 9 | HA070001 | Cerveza Lager 355ml | BEBIDAS_ALCOHOLICAS | 2 107 | $84 703.97 |
+| 10 | FA050001 | Snack Papas Original | SNACKS | 4 241 | $67 693.60 |
+
+Las querys SQL para reproducir cualquiera de estas tablas:
 
 ```sql
-SELECT *
-FROM delta.`dbfs:/Volumes/saas_dev/shared/data/gold/pe/daily_metrics_by_delivery_type`
-ORDER BY fecha_proceso, tipo_entrega
-LIMIT 20;
-```
+-- Conteo por capa
+SELECT 'bronze' layer, COUNT(*) rows FROM delta.`/Volumes/saas_dev/shared/data/bronze/pe/deliveries`
+UNION ALL SELECT 'silver_fact', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/silver/pe/fact_deliveries`
+UNION ALL SELECT 'silver_dim', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/silver/pe/dim_materials`
+UNION ALL SELECT 'silver_quarantine', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/silver_quarantine/pe/fact_deliveries`
+UNION ALL SELECT 'gold_daily', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/gold/pe/daily_metrics_by_delivery_type`
+UNION ALL SELECT 'gold_top_materials', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/gold/pe/top_materials_by_month`
+UNION ALL SELECT 'quality_logs', COUNT(*) FROM delta.`/Volumes/saas_dev/shared/data/shared/quality_logs`;
 
-### Top materiales del mes (Gold #2)
-
-```sql
-SELECT *
-FROM delta.`dbfs:/Volumes/saas_dev/shared/data/gold/pe/top_materials_by_month`
-WHERE year_month = '202503'
-ORDER BY rank
-LIMIT 10;
-```
-
-### Quality logs
-
-```sql
+-- Quality logs
 SELECT check_name, check_severity, records_checked, records_failed, check_passed
-FROM delta.`dbfs:/Volumes/saas_dev/shared/data/shared/quality_logs`
-ORDER BY executed_at DESC;
+FROM delta.`/Volumes/saas_dev/shared/data/shared/quality_logs` ORDER BY check_name;
+
+-- Daily metrics
+SELECT fecha_proceso, tipo_entrega, total_units, ROUND(total_revenue,2) revenue, active_routes, active_transports
+FROM delta.`/Volumes/saas_dev/shared/data/gold/pe/daily_metrics_by_delivery_type`
+ORDER BY fecha_proceso, tipo_entrega LIMIT 20;
+
+-- Top materiales mes
+SELECT rank, material, descripcion, categoria, total_units, ROUND(total_revenue,2) revenue
+FROM delta.`/Volumes/saas_dev/shared/data/gold/pe/top_materials_by_month`
+WHERE year_month='202503' ORDER BY rank;
+
+-- Cuarentena por motivo
+SELECT _quarantine_reason, COUNT(*) n
+FROM delta.`/Volumes/saas_dev/shared/data/silver_quarantine/pe/fact_deliveries`
+GROUP BY _quarantine_reason;
 ```
 
 ---
+
+## 9. ¿Por qué `.py` y no notebooks?
+
+Decisión consciente. Resumen breve:
+
+**Notebooks de Databricks son útiles para:** exploración interactiva, dashboards, prototipos rápidos, presentar resultados a stakeholders. Ahí ganan.
+
+**Para un pipeline de producción multi-tenant son una mala elección, por cinco razones concretas:**
+
+1. **Control de versiones.** El formato `.ipynb` (o `.dbc`) es JSON con outputs embebidos. Los diffs en GitHub son ilegibles — un cambio de una línea de código aparece junto a 200 líneas de metadata, hashes de cells, run counts. En un repo donde se hacen PRs (criterio explícito del enunciado, sec 12) eso bloquea la revisión.
+2. **Testabilidad.** No se puede ejecutar un notebook como un `pytest`. Para testear lógica de transformación necesito que sea una función Python en un módulo importable. `silver.py:_classify_anomalies` se testea con 5 filas sintéticas en milisegundos; el mismo código dentro de una celda de notebook necesita arrancar un cluster.
+3. **Reutilización.** Los `.py` se importan: `from saas_pipeline.silver import _classify_anomalies`. Un notebook no exporta — se "ejecuta entero" o se copia-pega celdas. Eso degrada rápido en duplicación.
+4. **CI/CD.** Ruff, mypy, pylint, pytest funcionan sobre `.py` desde GitHub Actions sin levantar Databricks. Un notebook necesita un workspace + cluster, lo cual es lento, caro y requiere autenticación en CI.
+5. **Idempotencia y diff en logs.** Si el output del notebook está versionado, cualquier ejecución cambia el archivo aunque el código no cambie. Tampoco se puede comparar dos runs leyendo el commit log.
+
+**Lo que sí hago con notebooks en este stack:**
+
+- `verify_pipeline.py` lo dejé como `.py` standalone, pero si necesitara una vista exploratoria de los resultados, abriría un notebook desde Databricks contra las tablas registradas en UC y haría queries ad-hoc. Esa es la herramienta correcta para esa tarea.
+- Para una demo de sustentación en vivo, abriría un notebook que importa `saas_pipeline` y ejecuta `pipeline.run_all(...)` — pero el código del pipeline en sí queda en módulos.
+
+**Resumen tabla:**
+
+| Necesidad | `.py` modular | Notebook |
+|---|---|---|
+| PRs con diffs revisables | ✅ | ❌ |
+| `pytest` corre el código | ✅ | ❌ |
+| `ruff` / `mypy` en CI | ✅ | ❌ |
+| Reutilización entre archivos | ✅ | ❌ |
+| Exploración interactiva | ⚠️ | ✅ |
+| Demo a stakeholders | ⚠️ | ✅ |
+| Dashboards y plots inline | ❌ | ✅ |
+
+Para este proyecto (pipeline multi-tenant, evaluación de senior DE), `.py` es el camino. Para una próxima iteración con dashboards interactivos sobre las tablas Gold, un notebook por encima del pipeline tiene sentido.
+
+---
+
+## 10. Cómo registrar las tablas en Unity Catalog (parte del repo)
+
+El pipeline escribe Delta files **a paths del volumen** — esa es la decisión arquitectónica que permite que el mismo código corra local y en Databricks sin ramas `if env == "databricks"`. Pero los archivos en un volumen no aparecen automáticamente en Catalog Explorer; hay que **registrarlos como tablas UC**.
+
+Esto está en `scripts/register_uc_tables.py`. Es un paso opt-in, separado de la pipeline, porque:
+
+- **Registrar tablas es una preocupación de deploy, no de pipeline.** El pipeline no debería saber si está corriendo contra UC o filesystem.
+- **Es idempotente** vía `CREATE OR REPLACE TABLE` — se puede correr múltiples veces sin riesgo.
+- **Está parametrizado** por catálogo + tenant + volume-root + warehouse-id, así sirve para `dev` / `qa` / `main` sin tocar código.
+
+Uso:
+
+```powershell
+uv run python scripts/register_uc_tables.py `
+    --catalog saas_dev `
+    --tenant pe `
+    --volume-root /Volumes/saas_dev/shared/data `
+    --warehouse-id 25e00cb35ca0fd42
+```
+
+Salida esperada:
+
+```
+[OK] saas_dev.bronze_pe.deliveries
+[OK] saas_dev.silver_pe.fact_deliveries
+[OK] saas_dev.silver_pe.dim_materials
+[OK] saas_dev.silver_pe.fact_deliveries_quarantine
+[OK] saas_dev.gold_pe.daily_metrics_by_delivery_type
+[OK] saas_dev.gold_pe.top_materials_by_month
+[OK] saas_dev.shared.quality_logs
+```
+
+Después de esto las tablas aparecen en Catalog Explorer y son queryables como:
+
+```sql
+SELECT * FROM saas_dev.gold_pe.daily_metrics_by_delivery_type LIMIT 10;
+```
+
+**Por qué CTAS y no `CREATE TABLE ... LOCATION '/Volumes/...'`:** Free Edition no permite registrar tablas externas apuntando directamente a paths de volume (devuelve `INVALID_PARAMETER_VALUE: Missing cloud file system scheme`). La alternativa es crear tablas managed con CTAS, que copia los datos a UC managed storage. Hay **duplicación de almacenamiento** (volumen + managed), pero a cambio se obtienen las garantías completas de UC (lineage, audit, time travel automático, predictive optimization).
+
+Para una iteración futura, lo correcto es modificar el pipeline para usar `saveAsTable("saas_dev.bronze_pe.deliveries")` directamente cuando `env=databricks` — eso elimina la duplicación. Es trabajo de ~1 hora y está en el backlog (ver `docs/observations.md` punto 7).
+
+---
+
+## 11. Conclusiones
 
 ## 8. Conclusiones del deploy
 
