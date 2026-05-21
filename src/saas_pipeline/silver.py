@@ -33,6 +33,10 @@ DIM_TABLE = "dim_materials"
 FACT_TABLE = "fact_deliveries"
 BRONZE_TABLE = "deliveries"
 
+# Discard sentinel used by _classify_anomalies. Rows with tipo_entrega outside the
+# valid set are counted but NOT persisted (sec 5.6).
+DISCARD_SENTINEL = "__discard__"
+
 
 # ─────────────────────────────────────── dim_materials ────────────────────────
 
