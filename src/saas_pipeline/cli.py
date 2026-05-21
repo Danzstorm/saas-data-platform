@@ -84,6 +84,7 @@ def run(
                     console.log(f"[yellow]{msg}[/]")
                 else:
                     gold.run_daily_metrics(spark, cfg, tenant=t, run_id=run_id)
+                    gold.run_top_materials_by_month(spark, cfg, tenant=t, run_id=run_id)
         except Exception as e:  # noqa: BLE001 — top-level CLI catches everything
             console.log(f"[red]Tenant {t} failed:[/] {e}")
             failures.append((t, str(e)))

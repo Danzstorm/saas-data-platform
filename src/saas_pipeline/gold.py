@@ -20,6 +20,7 @@ from saas_pipeline.paths import layer_table_path
 
 SILVER_TABLE = "fact_deliveries"
 GOLD_TABLE = "daily_metrics_by_delivery_type"
+GOLD_TOP_MATERIALS = "top_materials_by_month"
 
 
 def run_daily_metrics(spark: SparkSession, cfg: DictConfig, tenant: str, run_id: str) -> None:
@@ -57,3 +58,59 @@ def run_daily_metrics(spark: SparkSession, cfg: DictConfig, tenant: str, run_id:
         .save(out_path)
     )
     print(f"[gold:daily_metrics:{tenant}] wrote {out_path}")
+
+
+def run_top_materials_by_month(spark: SparkSession, cfg: DictConfig, tenant: str, run_id: str) -> None:
+    """Bonus Gold #2: top 10 materiales por revenue, por (tenant, año-mes).
+
+    Granularidad: una fila por (tenant_id, year_month, rank). Útil para dashboards
+    que muestran "qué se vende más" mes a mes.
+
+    Uso típico (downstream):
+        SELECT * FROM gold_<tenant>.top_materials_by_month
+        WHERE year_month = '2025-03' ORDER BY rank LIMIT 10;
+    """
+    from pyspark.sql.window import Window
+
+    src_path = layer_table_path(cfg, layer="silver", tenant=tenant, table=SILVER_TABLE)
+    fact = spark.read.format("delta").load(src_path)
+
+    start_compact = cfg.execution.start_date.replace("-", "")
+    end_compact = cfg.execution.end_date.replace("-", "")
+    fact = fact.filter(
+        (F.col("fecha_proceso") >= start_compact) & (F.col("fecha_proceso") <= end_compact)
+    ).withColumn("year_month", F.substring("fecha_proceso", 1, 6))
+
+    agg = fact.groupBy("_tenant_id", "year_month", "material", "descripcion", "categoria").agg(
+        F.sum("cantidad_st").alias("total_units"),
+        F.sum(F.col("cantidad_st") * F.col("precio")).alias("total_revenue"),
+    )
+
+    w = Window.partitionBy("_tenant_id", "year_month").orderBy(F.col("total_revenue").desc())
+    ranked = (
+        agg.withColumn("rank", F.row_number().over(w))
+        .filter(F.col("rank") <= 10)
+        .withColumn("_gold_run_id", F.lit(run_id))
+        .withColumn("_gold_ingestion_timestamp", F.current_timestamp())
+    )
+
+    out_path = layer_table_path(cfg, layer="gold", tenant=tenant, table=GOLD_TOP_MATERIALS)
+    # Replace only the months we recomputed → idempotent for the requested window.
+    months = (
+        fact.select("year_month").distinct().collect()
+    )
+    if not months:
+        print(f"[gold:top_materials:{tenant}] no data in range — skipping")
+        return
+    quoted = ", ".join(f"'{r.year_month}'" for r in months)
+    replace_where = f"year_month IN ({quoted})"
+
+    (
+        ranked.write.format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .option("replaceWhere", replace_where)
+        .partitionBy("year_month")
+        .save(out_path)
+    )
+    print(f"[gold:top_materials:{tenant}] wrote {out_path}")
