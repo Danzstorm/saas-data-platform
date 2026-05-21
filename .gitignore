@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# uv / venv
+.venv/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Spark / Delta
+spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+_delta_log/
+
+# Data (generated outputs). data/raw/ contains the input CSVs and IS versioned.
+data/bronze/
+data/silver/
+data/gold/
+data/bronze_quarantine/
+data/silver_quarantine/
+data/shared/
+data/_checkpoints/
+!data/raw/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local config overrides
+config/local.yaml
+.env
+.env.local
+
+# Claude / AI dev kit (local tooling, not part of deliverable)
+.ai-dev-kit/
+.claude/
+.mcp.json
+
+# Local verification logs
+e2e_run.log
+pipeline_all.log
+verify_*.log
+scripts/
