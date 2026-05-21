@@ -1,0 +1,22 @@
+# Databricks Free Edition target.
+# Paths point to a UC volume; Delta tables are written as files under the volume.
+# This keeps the code path identical to local (write to a path, not saveAsTable).
+# A future enhancement is to switch to saveAsTable for native UC table registration.
+project:
+  env: databricks
+
+paths:
+  bronze: "dbfs:/Volumes/saas_dev/shared/data/bronze"
+  silver: "dbfs:/Volumes/saas_dev/shared/data/silver"
+  gold: "dbfs:/Volumes/saas_dev/shared/data/gold"
+  quarantine_root: "dbfs:/Volumes/saas_dev/shared/data"
+  quality_logs: "dbfs:/Volumes/saas_dev/shared/data/shared/quality_logs"
+  raw_deliveries: "dbfs:/Volumes/saas_dev/shared/raw/global_mobility_data_entrega_productos.csv"
+  raw_materials: "dbfs:/Volumes/saas_dev/shared/raw/materials_catalog.csv"
+
+spark:
+  shuffle_partitions: 8
+  log_level: "WARN"
+
+quality:
+  fail_on_critical: false

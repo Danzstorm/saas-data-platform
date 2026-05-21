@@ -9,7 +9,12 @@ from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
 
-CONFIG_DIR_DEFAULT = Path(__file__).resolve().parents[2] / "config"
+import os
+
+_ENV_OVERRIDE = os.environ.get("SAAS_CONFIG_DIR")
+CONFIG_DIR_DEFAULT = (
+    Path(_ENV_OVERRIDE) if _ENV_OVERRIDE else Path(__file__).resolve().parents[2] / "config"
+)
 
 
 def load_config(
