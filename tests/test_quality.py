@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 from pyspark.sql import Row
 
 from saas_pipeline.quality import (
