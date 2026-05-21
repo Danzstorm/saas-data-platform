@@ -7,7 +7,7 @@ gate → Gold) lives here so there is a single source of truth.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from omegaconf import DictConfig
 from pyspark.sql import SparkSession
