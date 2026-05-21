@@ -293,23 +293,100 @@ No tocás código en ningún paso. Si tenés que tocar código, algo en el paso 
 
 ---
 
-## 10. Despliegue en Databricks
+## 10. Despliegue en Databricks Free Edition
 
-Esta entrega corre localmente. Para llevarla a **Databricks Free Edition** ya está la base puesta:
+**Estado: deployado, corriendo, tablas en Unity Catalog ✅.** Para el detalle completo (con todos los gotchas y workarounds que tuve que resolver), ver [`docs/databricks-free-edition.md`](docs/databricks-free-edition.md).
 
-- Los paths salen de `config/*.yaml` — cambiar `data/...` por `abfss://...` o tablas UC es un YAML.
-- `.mcp.json` configura el MCP server de Databricks (Claude Code / Cursor pueden invocarlo).
-- `pyproject.toml` incluye `databricks-sdk` para deploy programático.
+### Lo que hay armado en el repo
 
-El paso siguiente es empaquetar como **Databricks Asset Bundle**:
-
-```bash
-databricks bundle init                # genera databricks.yml
-databricks bundle deploy --target dev
-databricks bundle run saas_pipeline --target dev
+```
+saas-data-platform/
+├── config/env/databricks.yaml         # paths /Volumes/saas_dev/shared/... (POSIX UC)
+├── databricks.yml                     # bundle DAB (deploy via bundle pendiente por bug upstream)
+├── src/saas_pipeline/
+│   ├── databricks_entrypoint.py       # job entrypoint (thin wrapper)
+│   └── pipeline.py                    # orchestration compartida con cli.py local
+├── scripts/register_uc_tables.py      # registra Delta files como tablas UC
+└── docs/databricks-free-edition.md    # guia paso a paso replicable
 ```
 
-> Estado: scaffolding listo, deploy efectivo a Free Edition pendiente. Es bonus opcional según sec 10 del enunciado.
+### Resultado del run real
+
+Run `229721693750716` en mi workspace Free Edition, tenant `pe`, rango Q1-Q2 2025:
+
+| Tabla UC | Filas |
+|---|---|
+| `saas_dev.bronze_pe.deliveries` | 300 |
+| `saas_dev.silver_pe.fact_deliveries` | 267 |
+| `saas_dev.silver_pe.dim_materials` | 35 |
+| `saas_dev.silver_pe.fact_deliveries_quarantine` | 9 |
+| `saas_dev.gold_pe.daily_metrics_by_delivery_type` | 101 |
+| `saas_dev.gold_pe.top_materials_by_month` | 60 |
+| `saas_dev.shared.quality_logs` | 4 |
+
+**Idéntico al run local** — el código del pipeline es 100% portable. La única diferencia es la config (`config/env/dev.yaml` vs `config/env/databricks.yaml`) y dos cosas que aísla el `databricks_entrypoint.py`: ANSI mode off (para `to_date` con fechas inválidas) y bootstrap de `sys.path` cuando `__file__` no existe bajo ipykernel.
+
+### Limitaciones reales de Free Edition que tuve que resolver
+
+| Limitación | Workaround aplicado |
+|---|---|
+| Sólo serverless compute (no clusters dedicados) | Job declara `environment_key` + `spec.client="2"` |
+| RDD API no implementada en Spark Connect | `df.rdd.isEmpty()` → `df.limit(1).count() == 0` |
+| `__file__` undefined en ipykernel | Fallback a `sys.argv[0]` en entrypoint |
+| ANSI mode on por default | `spark.conf.set('spark.sql.ansi.enabled','false')` en entrypoint |
+| Catálogos requieren default storage | Crear via SQL warehouse, no CLI |
+| `workspace import-dir` convierte `.py` en notebooks | Upload archivo por archivo con `import --file --format AUTO` |
+| `dbfs:/Volumes/...` deprecado | POSIX `/Volumes/...` puro |
+| `pathlib.Path` rompe URIs en Windows | `paths.py` detecta prefijos POSIX/remotos |
+| `CREATE TABLE LOCATION '/Volumes/...'` rechazado | CTAS desde `delta.\`/Volumes/...\`` |
+| Bundle DAB (`databricks bundle deploy`) | Bug upstream Terraform PGP; workaround: upload + `jobs create` directo |
+
+### Cómo replicarlo paso a paso
+
+[`docs/databricks-free-edition.md`](docs/databricks-free-edition.md) tiene la guía completa. Resumen:
+
+```powershell
+# 1. Autenticar CLI contra Free Edition (browser OAuth)
+databricks auth login --host https://dbc-XXXXXXX.cloud.databricks.com
+
+# 2. Crear catálogo + schemas + volúmenes (via SQL warehouse)
+#    Ver databricks-free-edition.md sección 1
+
+# 3. Subir CSVs al volume
+databricks fs cp data/raw/global_mobility_data_entrega_productos.csv \
+    dbfs:/Volumes/saas_dev/shared/raw/global_mobility_data_entrega_productos.csv --overwrite
+databricks fs cp data/raw/materials_catalog.csv \
+    dbfs:/Volumes/saas_dev/shared/raw/materials_catalog.csv --overwrite
+
+# 4. Subir código (cada .py como workspace FILE, no notebook)
+$wsPath = "/Workspace/Users/<TU_EMAIL>/saas-data-platform"
+Get-ChildItem src\saas_pipeline\*.py | ForEach-Object {
+  databricks workspace import "$wsPath/src/saas_pipeline/$($_.Name)" `
+    --file $_.FullName --format AUTO --overwrite
+}
+
+# 5. Crear y ejecutar el job (ver databricks_job.json en docs)
+databricks jobs create --json '@databricks_job.json'
+databricks jobs run-now <JOB_ID>
+
+# 6. Registrar Delta files como tablas UC
+uv run python scripts/register_uc_tables.py \
+    --catalog saas_dev --tenant pe \
+    --volume-root /Volumes/saas_dev/shared/data \
+    --warehouse-id <WAREHOUSE_ID>
+```
+
+Después: `SELECT * FROM saas_dev.gold_pe.daily_metrics_by_delivery_type` en cualquier SQL editor.
+
+### ¿Por qué `.py` y no notebooks?
+
+Decisión consciente. Resumen breve (detalle completo en [`docs/databricks-free-edition.md`](docs/databricks-free-edition.md) sección 9):
+
+- **PRs revisables:** los `.ipynb` son JSON con outputs embebidos — diffs ilegibles. Para una entrega con PRs (criterio sec 12) bloquea la revisión.
+- **Testeable:** `pytest` corre `.py`, no notebooks. Las 31 pruebas locales son posibles porque `silver.py:_classify_anomalies` es una función importable.
+- **CI/CD:** ruff + pytest en GitHub Actions sin levantar Databricks.
+- **Reutilización:** `from saas_pipeline.silver import ...` no es posible desde un notebook.
+- **Notebooks ganan para:** exploración, dashboards interactivos sobre las tablas Gold, demos. No para producción multi-tenant.
 
 ---
 
