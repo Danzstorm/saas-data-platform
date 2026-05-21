@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-test:
+    name: Lint + Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Java 17 (required by PySpark)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.4.x"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Validate YAML configs load
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for p in Path("config").rglob("*.yaml"):
+              with p.open(encoding="utf-8") as f:
+                  data = yaml.safe_load(f)
+              assert isinstance(data, dict) and data, f"Empty/invalid YAML: {p}"
+              print(f"OK: {p}")
+          PY
+
+      - name: Validate config merge precedence
+        run: uv run python -c "from saas_pipeline.config import load_config; cfg = load_config('qa', 'sv'); assert cfg.spark.shuffle_partitions == 32; assert cfg.tenant.id == 'sv'; print('config merge OK')"
+
+      - name: Run tests
+        env:
+          PYSPARK_PYTHON: python
+          PYSPARK_DRIVER_PYTHON: python
+        run: uv run pytest -v --tb=short
