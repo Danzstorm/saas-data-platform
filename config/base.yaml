@@ -1,0 +1,49 @@
+# Base configuration — defaults shared across environments and tenants.
+# Override hierarchy: base.yaml < env/<env>.yaml < tenants/<tenant>.yaml
+
+project:
+  name: saas-data-platform
+  env: dev
+  catalog_template: "saas_${project.env}"  # mapped to Unity Catalog name in Databricks
+
+# Data layout (paths). In Databricks these map to UC tables: <catalog>.<layer>_<tenant>.<table>
+paths:
+  raw: "data/raw"
+  bronze: "data/bronze"
+  silver: "data/silver"
+  gold: "data/gold"
+  quarantine_root: "data"          # quarantine = <root>/<layer>_quarantine/<tenant>/<table>/
+  quality_logs: "data/shared/quality_logs"
+  raw_deliveries: "data/raw/global_mobility_data_entrega_productos.csv"
+  raw_materials: "data/raw/materials_catalog.csv"
+
+# Tenants known to the platform. Tenant codes are lowercase (normalized from CSV).
+tenants:
+  known: [sv, hn, jm, ec, pe, gt]
+
+# Execution defaults (overridable via CLI)
+execution:
+  env: dev
+  tenant: all
+  start_date: "2025-01-01"
+  end_date: "2025-06-30"
+  fail_fast: false   # when tenant=all, abort all on first failure vs. continue
+
+# Spark session options
+spark:
+  app_name: "saas-pipeline"
+  shuffle_partitions: 8           # local-friendly default
+  driver_memory: "2g"
+  log_level: "WARN"
+  delta_extensions: true
+
+# Business rules
+business:
+  cs_to_st_factor: 20             # 1 CS = 20 ST
+  valid_delivery_types: [ZPRE, ZVE1, Z04, Z05]
+  routine_types: [ZPRE, ZVE1]
+  bonus_types: [Z04, Z05]
+
+# Data quality
+quality:
+  fail_on_critical: false         # if true, abort before Gold on critical check failure

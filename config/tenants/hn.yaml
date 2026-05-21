@@ -1,0 +1,5 @@
+tenant:
+  id: hn
+  display_name: "Honduras"
+  timezone: "America/Tegucigalpa"
+  currency: "HNL"

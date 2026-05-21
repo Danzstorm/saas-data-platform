@@ -1,0 +1,5 @@
+tenant:
+  id: jm
+  display_name: "Jamaica"
+  timezone: "America/Jamaica"
+  currency: "JMD"

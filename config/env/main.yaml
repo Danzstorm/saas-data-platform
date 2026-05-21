@@ -1,0 +1,17 @@
+# Main / production environment.
+project:
+  env: main
+
+paths:
+  bronze: "data/main/bronze"
+  silver: "data/main/silver"
+  gold: "data/main/gold"
+  quarantine_root: "data/main"
+  quality_logs: "data/main/shared/quality_logs"
+
+spark:
+  shuffle_partitions: 64
+  log_level: "WARN"
+
+quality:
+  fail_on_critical: true

@@ -1,0 +1,5 @@
+tenant:
+  id: pe
+  display_name: "Perú"
+  timezone: "America/Lima"
+  currency: "PEN"

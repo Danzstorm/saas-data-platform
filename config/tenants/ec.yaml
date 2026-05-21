@@ -1,0 +1,5 @@
+tenant:
+  id: ec
+  display_name: "Ecuador"
+  timezone: "America/Guayaquil"
+  currency: "USD"

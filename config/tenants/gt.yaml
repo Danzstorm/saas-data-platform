@@ -1,0 +1,5 @@
+tenant:
+  id: gt
+  display_name: "Guatemala"
+  timezone: "America/Guatemala"
+  currency: "GTQ"
