@@ -1,0 +1,61 @@
+# Databricks Asset Bundle — SAAS data platform.
+# Free Edition uses serverless compute exclusively; the job declares
+# environment_key (instead of cluster) for serverless tasks.
+#
+# Deploy:
+#   databricks bundle deploy --target dev
+# Run:
+#   databricks bundle run saas_pipeline --target dev
+
+bundle:
+  name: saas_data_platform
+
+variables:
+  tenant:
+    description: Tenant code to process (e.g. pe, sv, all)
+    default: pe
+  start_date:
+    description: Start of fecha_proceso range (YYYY-MM-DD)
+    default: "2025-01-01"
+  end_date:
+    description: End of fecha_proceso range (YYYY-MM-DD)
+    default: "2025-06-30"
+
+resources:
+  jobs:
+    saas_pipeline:
+      name: saas_pipeline_${bundle.target}
+      description: Bronze → Silver → Gold pipeline for SAAS data platform.
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: run_pipeline
+          environment_key: default
+          spark_python_task:
+            python_file: ./src/saas_pipeline/databricks_entrypoint.py
+            parameters:
+              - "--layer"
+              - "all"
+              - "--tenant"
+              - "${var.tenant}"
+              - "--env"
+              - "databricks"
+              - "--start-date"
+              - "${var.start_date}"
+              - "--end-date"
+              - "${var.end_date}"
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+            dependencies:
+              - omegaconf>=2.3.0
+              - typer>=0.12.0
+              - rich>=13.0.0
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-ef0fd52d-2953.cloud.databricks.com

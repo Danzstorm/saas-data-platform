@@ -41,7 +41,10 @@ extend-exclude = ["data", "spark-warehouse", "mentoring/bad_code.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
-ignore = ["E501"]
+# E501: line length handled by formatter, not lint.
+# N812: PySpark community convention is `from pyspark.sql import functions as F`.
+#       Renaming it would diverge from every Spark example out there.
+ignore = ["E501", "N812"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["N802", "N806"]

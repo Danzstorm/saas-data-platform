@@ -1,95 +1,122 @@
 # Observaciones a la arquitectura provista
 
-> Archivo obligatorio según sección 9.2 de la prueba. Contiene observaciones sustantivas sobre la arquitectura SAAS provista: decisiones con las que no estoy completamente de acuerdo, ambigüedades resueltas durante la implementación y mejoras propuestas para iteraciones siguientes. La regla de oro fue: **no cambiar la arquitectura unilateralmente**; cuando discrepé, lo dejé registrado aquí para discutirlo en la sustentación.
+Documento obligatorio según sec 9.2. La consigna fue clara: la arquitectura ya está definida (sec 5) y mi trabajo es implementarla, no rediseñarla. Cuando discrepé con algo, lo dejé acá para discutir en sustentación en lugar de cambiarlo unilateralmente. La sec 12 lo pide así también ("Cambios a la arquitectura provista sin registrarlos en observations.md" es criterio negativo).
+
+Lo que viene son seis observaciones. Las dos primeras son discrepancias con trade-off explícito. La tercera y cuarta son discrepancias con propuesta concreta de mejora. La quinta y sexta son ambigüedades que tuve que resolver durante la implementación y vale la pena exponer.
 
 ---
 
-## 1. Aislamiento por schema dentro de un catálogo único: trade-off real, no decisión obvia
+## 1. Aislamiento por schema vs catálogo: la decisión correcta hoy, con costo mañana
 
-**Lo que dice la arquitectura.** Sec 5.2: un sólo catálogo por ambiente (`saas_dev`, `saas_qa`, `saas_main`) y un schema por tenant. Justificación: onboarding ágil, gobierno centralizado y vistas cross-tenant en Gold.
+La sec 5.2 elige aislar tenants por schema dentro de un catálogo único (`saas_<env>`). La justificación que da el documento — onboarding ágil, gobierno centralizado, vistas cross-tenant en Gold — es válida. **Estoy de acuerdo en que es la elección correcta para el estado actual del proyecto.**
 
-**Mi discrepancia.** Estoy de acuerdo en que es la elección correcta **hoy**, pero la decisión tiene un costo que vale la pena documentar para que el equipo no se sorprenda más adelante:
+Lo que me preocupa es el costo que esa decisión carga para el futuro y que el documento no menciona:
 
-- **Blast radius del IAM.** Un misclick a nivel de catálogo (`GRANT ALL ON CATALOG saas_dev TO ...`) impacta a todos los tenants. La elección por schema asume que el rol de admin del catálogo es altamente disciplinado. En una corporación con N unidades de negocio, ese supuesto se rompe rápido.
-- **Storage credentials y external locations.** Si en el futuro un tenant exige aislamiento de storage (ej. CBC con compliance distinto a Beliv), forzar todo bajo un mismo catálogo obliga a mover el aislamiento a `external location` por schema, que es más oscuro y menos auditable que tener un catálogo por tenant.
-- **Lakehouse Federation y data sharing.** Compartir datos cross-tenant entre catálogos (Delta Sharing) tiene una semántica más natural que entre schemas. Si en H2 aparece un caso de monetización del dato (otro tenant paga por leer agregados), el modelo schema lo complica.
+**Blast radius del IAM.** Un misclick a nivel de catálogo (`GRANT ALL ON CATALOG saas_dev TO ...`) afecta a todos los tenants a la vez. El modelo asume que el rol de admin del catálogo es altamente disciplinado y que los grupos están bien sincronizados con Entra ID. En una corporación con N unidades de negocio (CBC, Beliv, BIA, ...) y N teams de plataforma, ese supuesto se rompe a los 6 meses.
 
-**Mi propuesta alternativa para Horizonte 2.** Mantener el modelo actual para tenants nuevos sin requisitos especiales, pero dejar previsto un patrón "tenant aislado" (catálogo dedicado `saas_<env>_<tenant>`) para los casos con compliance, residencia de datos o billing separado. La capa de configuración (`config/tenants/*.yaml`) ya soporta esto añadiendo un campo `tenant.catalog_template`; en mi implementación lo dejé extensible para no cerrar la puerta.
+**Storage credentials y external locations.** Si en H2 aparece un tenant con compliance distinto (ej. CBC con requisitos de residencia de datos por país que Beliv no tiene), el aislamiento real hay que moverlo a `external location` por schema, que es menos auditable que tener un catálogo por tenant. Esa es la cirugía que después cuesta meses.
 
-**Trade-off honesto.** La arquitectura provista optimiza por velocidad de onboarding (90% de los casos). Mi propuesta agrega complejidad solo para el 10% que la necesita. Vale la pena tener el patrón listo, no la implementación.
+**Mi propuesta.** Mantener el modelo actual como default para el 90% de tenants. Pero dejar previsto un patrón "tenant aislado" (catálogo dedicado `saas_<env>_<tenant>`) para los casos con compliance / residencia / billing separados. La capa de configuración (`config/tenants/*.yaml`) ya lo soporta — agregando un campo `tenant.catalog_template`. En mi implementación lo dejé extensible para no cerrar la puerta.
 
----
-
-## 2. La partición de Bronze por `(fecha_proceso, tenant_id)` mezcla dos cosas distintas
-
-**Lo que dice la arquitectura.** Sec 5.4: Bronze particionado por `fecha_proceso` Y `tenant_id`.
-
-**Ambigüedad / discrepancia.** En la estructura de paths definida en sec 5.2, el tenant ya es parte del **path físico**: `data/bronze/<tenant>/deliveries/fecha_proceso=YYYYMMDD/`. Si encima particiono por `tenant_id` dentro de la tabla, termino con un path tipo `data/bronze/sv/deliveries/fecha_proceso=20250301/_tenant_id=sv/...` — la columna `_tenant_id` queda **siempre constante** dentro de una tabla porque el path ya separa por tenant.
-
-**Cómo lo resolví.** Implementé el doble particionado tal como pide la spec, pero documentando que `_tenant_id` es de cardinalidad 1 por tabla (overhead de partición es despreciable). El beneficio real: en Databricks, si en algún momento se decide colapsar todos los tenants en una sola tabla por capa (modelo "Unity con vistas filtradas por row-level security"), el código ya está preparado y sólo cambia el path raíz. No tener `_tenant_id` como columna de partición rompería ese path migratorio.
-
-**Recomendación.** Mantener el `_tenant_id` partition column en la spec, pero aclarar en la guía de arquitectura que es **opcional para path-based isolation** y **requerida para single-table isolation**. Hoy queda como un costo pequeño con un beneficio futuro.
+No lo apliqué porque cambiar la arquitectura unilateralmente no es lo que pide el enunciado. Pero quería tenerlo en el radar.
 
 ---
 
-## 3. La política de "tipo_entrega inválido → descarte" no registra trazabilidad
+## 2. La partición de Bronze por `(fecha_proceso, tenant_id)` es redundante con el path
 
-**Lo que dice la arquitectura.** Sec 5.6: filas con `tipo_entrega` fuera de `{ZPRE, ZVE1, Z04, Z05}` se **descartan** (sólo se contabilizan, no se persisten). Resto de anomalías van a cuarentena.
+La sec 5.4 pide particionar Bronze por **fecha_proceso Y tenant_id**. Pero la sec 5.2 ya separa por tenant en el path físico: `data/bronze/<tenant>/deliveries/fecha_proceso=YYYYMMDD/`. El resultado es que dentro de una tabla Bronze el `_tenant_id` tiene cardinalidad 1 — siempre es el mismo valor — y la columna de partición es "técnica" más que funcional.
 
-**Mi discrepancia.** La justificación del documento ("COBR y Z99 no pertenecen al alcance analítico") es una **decisión de scope analítico**, pero no es lo mismo que "estos datos no nos sirven en ningún caso". COBR (cobranza) y Z99 (lo que sea Z99) son **datos legítimos del feed origen**. Si mañana el equipo de finanzas pregunta cuántas cobranzas se procesaron por país, no podemos contestar — los descartamos sin dejar rastro.
+Cuando lo implementé pensé en dos opciones: (a) ignorar el doble particionado, que para el caso local es lo más limpio, o (b) implementarlo tal como pide la spec, asumiendo que hay una razón mirando al futuro. Elegí (b) porque encontré la razón: si en algún momento la plataforma decide colapsar todos los tenants en una **sola tabla por capa** (modelo "Unity Catalog con row-level security" o "Delta Sharing entre catálogos"), el código ya queda preparado y sólo cambia el path raíz. No tener `_tenant_id` como columna de partición rompería ese camino migratorio.
 
-**Cómo lo resolví.** Implementé el comportamiento exacto que pide la spec (descarte en Silver), pero registro el conteo en `quality_logs` indirectamente al persistir el resultado de `_classify_anomalies` (la métrica `discarded_invalid_type` queda en el log del proceso). Como mejora propuesta, no la apliqué unilateralmente.
-
-**Mi propuesta para Horizonte 2.** Renombrar la política a *"descarte para el alcance analítico de Silver, persistir en una tabla `bronze_descartes/<tenant>` para auditoría"*. Costo marginal (escribir filas que ya tenemos en memoria), beneficio claro: cuando alguien pregunta por COBR existe una respuesta. Si en algún momento se incorporan al modelo (ej. Z99 termina siendo un tipo de promoción), está todo el histórico recuperable sin reprocesos.
+**Recomendación para la guía de arquitectura.** Aclarar que el doble particionado es *opcional* en path-based isolation y *requerido* para single-table isolation. Hoy es overhead pequeño con beneficio futuro — vale la pena dejarlo documentado.
 
 ---
 
-## 4. Quality logs sin retención ni particionado: bomba de tiempo
+## 3. "tipo_entrega inválido → descarte" pierde trazabilidad
 
-**Lo que dice la arquitectura.** Sec 5.9: tabla `quality_logs` con esquema definido y ubicación `data/shared/quality_logs/` (o `<env>.shared.quality_logs` en Databricks). No se menciona retención ni particionado.
+La sec 5.6 dice que las filas con `tipo_entrega` fuera de `{ZPRE, ZVE1, Z04, Z05}` se **descartan** (sólo se contabilizan, no se persisten). La justificación del documento: "COBR y Z99 no pertenecen al alcance analítico".
 
-**Mi discrepancia / ambigüedad.** Con 6 tenants × 3 capas × 4 checks × N corridas por día, la tabla crece rápido. Sin particionar, cada lectura escanea todo el histórico. Sin retención, después de 6 meses tenemos millones de filas para algo que mayormente se consulta "últimos 7 días".
+Acá tengo una discrepancia real. Esa justificación mezcla dos cosas:
 
-**Cómo lo resolví.** En mi implementación dejé la tabla **sin particionar** (siguiendo la spec literal), pero el esquema incluye `executed_at` como `timestamp`, lo cual deja el camino libre para añadir `partitionBy(F.to_date("executed_at"))` cuando se eleve a productivo. No lo apliqué por respeto a la arquitectura provista.
+1. *Estos tipos no pertenecen al modelo analítico de Silver.* — De acuerdo.
+2. *Estos datos no nos sirven en ningún caso.* — No estoy de acuerdo.
 
-**Mi propuesta para Horizonte 2.**
-1. **Particionar** `quality_logs` por `executed_date = date(executed_at)`.
-2. **Política de retención** Delta (`VACUUM` + `tblproperties("delta.logRetentionDuration"='interval 30 days')`).
-3. **Tabla agregada** `quality_logs_daily` por (date, tenant, layer, check_name) para dashboards rápidos.
-4. **Alerting** declarativo: un check `critical` que falle dispara una notificación (Databricks Lakehouse Monitoring o un Job de alertas). La spec habla de `fail_on_critical` para abortar el job, pero abortar sin alertar es la mitad del trabajo.
+COBR (cobranza) y Z99 son **filas legítimas del feed origen**. Si mañana finanzas pregunta "¿cuántas cobranzas procesamos en marzo?", la respuesta es "no sé, las descartamos". Y si en algún momento Z99 termina siendo un tipo de promoción que sí se incorpora al modelo (porque se acordó internamente), no hay histórico para recuperar — habría que pedir al feed que reenvíe.
 
----
+**Implementación actual.** Respeté la spec — los descarto en Silver. Pero registro el conteo en `quality_logs` indirectamente (la métrica `discarded_invalid_type` aparece en el output del proceso).
 
-## 5. (Bonus) Faltan convenciones para reproceso histórico vs. backfill
-
-**Ambigüedad.** La spec habla de idempotencia (sec 5.5) — perfecto. Pero no aclara la diferencia operativa entre:
-
-- **Reproceso incremental:** ayer falló un día, lo vuelvo a correr. Funciona con `replaceWhere` actual.
-- **Backfill masivo:** se descubrió un bug en la lógica CS→ST y hay que reprocesar 6 meses para todos los tenants. ¿Esto se hace cómo? ¿Un job que itera día por día? ¿Un override del rango con un flag de "modo backfill"?
-
-**Cómo lo resolví.** El CLI acepta cualquier `--start-date --end-date`, así que técnicamente sirve para ambos. Pero un backfill de 6 meses para 6 tenants es 6 × 180 = 1080 reescrituras de partición — sin paralelismo a nivel de driver es lento.
-
-**Propuesta H2.** Documentar el patrón "backfill" como un Job de Databricks con `for_each_task` (un task por tenant) y subdividir por mes. O usar `repartitionByRange` + `replaceWhere` con un rango más grande. Pero esto se discute con el equipo, no se decide unilateralmente.
+**Propuesta para H2.** Reescribir la política como *"descarte para el alcance analítico de Silver, pero persistir en una tabla `bronze_descartes/<tenant>/` para auditoría"*. Costo: marginal (las filas ya están en memoria cuando se decide descartarlas). Beneficio: cuando alguien pregunta por COBR existe una respuesta. Y si en H2 se incorporan, el histórico está.
 
 ---
 
-## 6. (Bonus) `dim_materials` global vs. por tenant es una decisión sin discutir
+## 4. `quality_logs` sin retención ni particionado: bomba de tiempo
 
-**Ambigüedad.** El cat catálogo `materials_catalog.csv` es uno solo y la spec habla de `silver_<tenant>.dim_materials`. ¿Significa que cada tenant tiene una copia idéntica del catálogo? ¿Y si en el futuro Beliv y CBC tienen catálogos parcialmente solapados pero con precios distintos?
+La sec 5.9 define el esquema de `quality_logs` y la ubicación (`data/shared/quality_logs/` local, `<env>.shared.quality_logs` en Databricks). No menciona retención ni particionado.
 
-**Cómo lo resolví.** Hoy escribo la misma dimensión en cada schema de tenant (siguiendo la spec literal). Es duplicación de datos, pero respeta el modelo de aislamiento.
+El cálculo rápido: 6 tenants × 4 checks × N corridas por día. Con corridas horarias = 576 filas por día = 210 000 por año. Sin particionar, cada query a `quality_logs` escanea el histórico completo. Y la mayoría de las queries reales son "últimos 7 días" — leer un año entero para mostrar una semana es ineficiente y caro.
 
-**Propuesta H2.** Considerar un schema `shared/dim_materials` o un catálogo `saas_<env>_shared`, y que cada `silver_<tenant>` mantenga sólo materiales realmente usados por ese tenant (vista filtrada o tabla derivada). Reduce duplicación y aclara la pregunta "¿este precio aplica a este tenant?" sin tener que mantener N copias.
+**Implementación actual.** Sin particionar (siguiendo la spec literal). Pero el esquema incluye `executed_at` como `timestamp`, lo cual deja el camino libre para particionar por `executed_date = date(executed_at)` cuando se decida elevar a productivo.
+
+**Propuesta para H2.**
+
+1. Particionar `quality_logs` por `executed_date`.
+2. Política de retención Delta: `TBLPROPERTIES ('delta.logRetentionDuration' = 'interval 30 days')` + un `VACUUM` semanal.
+3. Tabla agregada `quality_logs_daily` por `(date, tenant, layer, check_name)` para dashboards.
+4. **Alerting declarativo.** Hoy `fail_on_critical` aborta el job pero no avisa a nadie. Un job de alertas (Lakehouse Monitoring o equivalente) que mire los checks `critical` y dispare notificación cierra el loop.
 
 ---
 
-## Resumen ejecutivo de las observaciones
+## 5. Ambigüedad: backfill masivo vs reproceso incremental
 
-| # | Observación | Tipo | Aplicado en el código |
+La sec 5.5 habla de idempotencia. La ejecuté correctamente para el caso "ayer falló, lo vuelvo a correr". Pero no aclara la diferencia operativa con el caso "se descubrió un bug en la lógica CS→ST y hay que reprocesar 6 meses para los 6 tenants".
+
+Técnicamente mi CLI lo soporta — `--start-date 2025-01-01 --end-date 2025-06-30 --tenant all` reescribe todo. Pero son 6 × 180 días = 1 080 reescrituras de partición, en serie. En local con 3 000 filas dura un minuto; en Databricks con 100 millones de filas dura horas y el cluster cuesta.
+
+**Cómo lo resolví.** Dejé el CLI capaz de procesar cualquier rango. Documenté la limitación.
+
+**Propuesta para H2.** Un Job de Databricks con `for_each_task` (un task por tenant) y subdivisión por mes paraleliza el backfill sin cambiar la lógica. O un modo "backfill" que use `repartitionByRange` para distribuir mejor la carga. Pero esto se conversa con el equipo, no se decide unilateralmente.
+
+---
+
+## 7. Tablas UC: writer path-based + registro post-pipeline en lugar de `saveAsTable`
+
+El pipeline escribe Delta a `cfg.paths.bronze/...` (filesystem local) o `/Volumes/saas_dev/shared/...` (UC volume en Databricks). Decisión consciente: **mismo código corre en ambos contextos sin ramas `if env == "databricks"`**.
+
+El costo: en Databricks Free Edition los archivos del volumen no aparecen como tablas en Catalog Explorer hasta que `scripts/register_uc_tables.py` los registra via `CREATE OR REPLACE TABLE ... AS SELECT * FROM delta.\`...\``. Eso introduce duplicación física (volumen + UC managed storage).
+
+**Alternativa que rechacé hoy:** modificar bronze/silver/gold para usar `saveAsTable("saas_dev.bronze_pe.deliveries")` cuando `env=databricks`. Eso elimina la duplicación y obtiene UC managed tables nativas, pero exige:
+- Una rama de código por capa que decide path vs table identifier.
+- Pre-crear las tablas con su schema en UC (saveAsTable falla si la tabla no existe en algunos casos).
+- Cambiar el comportamiento de `replaceWhere` (que necesita schema match en tablas managed vs es flexible en paths).
+
+**Propuesta H2:** introducir un `cfg.uc_table_mode: true` que cambia los writers a `saveAsTable`. Implica refactor de ~1 hora. No es bloqueante para producción — el path actual funciona, la duplicación es marginal con el volumen del dataset que esperamos.
+
+---
+
+## 6. Ambigüedad: `dim_materials` global vs por tenant
+
+El catálogo `materials_catalog.csv` es **uno solo**, pero la spec habla de `silver_<tenant>.dim_materials` (una dimensión por tenant). Eso significa que cada tenant tiene una copia idéntica del catálogo.
+
+Es duplicación de datos pero respeta el modelo de aislamiento. La pregunta es si en el futuro (Beliv vs CBC) los catálogos van a ser parcialmente solapados pero con precios distintos por tenant. Si la respuesta es sí, el modelo actual no escala bien.
+
+**Cómo lo resolví.** Hoy escribo la misma dimensión en cada schema de tenant (siguiendo la spec literal). Es lo correcto bajo el supuesto actual.
+
+**Propuesta para H2.** Considerar un schema `shared/dim_materials` o un catálogo `saas_<env>_shared`. Cada `silver_<tenant>` mantiene sólo materiales realmente usados por ese tenant (vista filtrada o tabla derivada). Reduce duplicación y aclara la pregunta "¿este precio aplica a este tenant?".
+
+Pero esto depende del modelo de gobierno del catálogo de materiales. Si negocio dice "el catálogo es global y los precios son por SKU", el modelo actual está bien y mi propuesta es ruido. Es una conversación con el dueño del producto, no una decisión técnica.
+
+---
+
+## Resumen ejecutivo
+
+| # | Observación | Tipo | Estado en código |
 |---|---|---|---|
-| 1 | Aislamiento schema vs. catálogo | Discrepancia con propuesta | Reserva el camino en config, no aplicado |
-| 2 | Partición Bronze redundante con path | Ambigüedad resuelta | Implementado tal cual la spec, documentado |
+| 1 | Aislamiento schema vs catálogo | Discrepancia con propuesta | Reservé el camino en config, no aplicado |
+| 2 | Partición Bronze redundante con path | Ambigüedad resuelta | Implementado tal cual spec, documentado |
 | 3 | Descarte sin trazabilidad | Discrepancia con propuesta | Spec respetada, métrica en logs |
-| 4 | quality_logs sin retención/partición | Discrepancia con propuesta | Esquema preparado, no aplicado |
+| 4 | quality_logs sin retención | Discrepancia con propuesta | Esquema preparado, no aplicado |
 | 5 | Backfill no definido | Ambigüedad | CLI lo soporta, doc operativa pendiente |
-| 6 | dim_materials global vs. por tenant | Ambigüedad | Duplicación según spec |
+| 6 | dim_materials global vs por tenant | Ambigüedad | Duplicación según spec |
+| 7 | UC tables via registro post-pipeline | Trade-off de portabilidad | Funciona, propuesta `saveAsTable` para H2 |
+
+Si tuviera que ranquear cuáles aplicaría primero en H2: **#4** (quality_logs sin retención) primero — porque el costo crece linealmente con el tiempo y es trivial de aplicar. Después **#3** (descartes con auditoría) — porque cierra un hueco de gobierno con costo marginal. **#1** (schema vs catálogo) lo dejaría para cuando aparezca el primer caso real que lo motive, no antes — over-engineering antes de tener el caso de uso es el otro error frecuente.

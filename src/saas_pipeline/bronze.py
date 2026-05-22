@@ -55,6 +55,9 @@ def _filter_to_tenant_and_range(
     dedicated ``fecha_proceso=__invalid__`` synthetic partition so Silver can pick
     them up later and quarantine them. Range filtering applies only to valid dates.
     """
+    # The entrypoint disables ANSI mode on Databricks so ``to_date`` returns
+    # NULL on invalid strings ('20250230', etc.) instead of throwing. Same
+    # behaviour as local Spark, single source of truth.
     parsed = F.to_date(F.col("fecha_proceso"), "yyyyMMdd")
     is_invalid_date = parsed.isNull()
     in_range = (parsed >= F.lit(start_date_iso)) & (parsed <= F.lit(end_date_iso))
@@ -79,7 +82,9 @@ def run(spark: SparkSession, cfg: DictConfig, tenant: str, run_id: str) -> None:
     filtered = _filter_to_tenant_and_range(raw, tenant, start_iso, end_iso)
     enriched = _add_technical_columns(filtered, tenant, source_file, batch_id)
 
-    if enriched.rdd.isEmpty():
+    # Avoid ``rdd.isEmpty()`` — RDD API isn't available on Databricks Serverless
+    # (Spark Connect). ``.limit(1).count()`` works in both classic and Connect modes.
+    if enriched.limit(1).count() == 0:
         print(f"[bronze:{tenant}] no rows in range — skipping write")
         return
 

@@ -1,0 +1,26 @@
+# Databricks Free Edition target.
+# Volume paths use POSIX format: /Volumes/<catalog>/<schema>/<volume>/...
+# DBFS is deprecated — no `dbfs:` prefix on UC Volumes.
+#
+# Layout in this deployment:
+#   /Volumes/saas_dev/shared/raw/   -> CSVs de entrada
+#   /Volumes/saas_dev/shared/code/  -> src/ y config/ subidos
+#   /Volumes/saas_dev/shared/data/  -> outputs Bronze/Silver/Gold + quality_logs
+project:
+  env: databricks
+
+paths:
+  bronze: "/Volumes/saas_dev/shared/data/bronze"
+  silver: "/Volumes/saas_dev/shared/data/silver"
+  gold: "/Volumes/saas_dev/shared/data/gold"
+  quarantine_root: "/Volumes/saas_dev/shared/data"
+  quality_logs: "/Volumes/saas_dev/shared/data/shared/quality_logs"
+  raw_deliveries: "/Volumes/saas_dev/shared/raw/global_mobility_data_entrega_productos.csv"
+  raw_materials: "/Volumes/saas_dev/shared/raw/materials_catalog.csv"
+
+spark:
+  shuffle_partitions: 8
+  log_level: "WARN"
+
+quality:
+  fail_on_critical: false

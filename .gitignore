@@ -59,4 +59,15 @@ config/local.yaml
 e2e_run.log
 pipeline_all.log
 verify_*.log
-scripts/
+# scripts/ — keep versioned; only verify_pipeline.py is local-only
+scripts/verify_pipeline.py
+
+# Databricks local artifacts (not part of the deliverable)
+databricks_job.json
+job_id.txt
+run_id.txt
+_tmp.json
+_update.json
+catalog_body.json
+sql_setup.json
+.databricks/

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 from pyspark.sql import Row
 
 from saas_pipeline.silver import (
@@ -15,7 +14,6 @@ from saas_pipeline.silver import (
     _normalize_units,
 )
 from tests.conftest import requires_spark
-
 
 VALID_TYPES = ["ZPRE", "ZVE1", "Z04", "Z05"]
 
@@ -50,9 +48,6 @@ def test_classify_anomalies_assigns_correct_reasons(spark) -> None:
             material="A", precio=Decimal("10"), cantidad=Decimal("1"), unidad="ST"),
     ]
     df = spark.createDataFrame(rows)
-    out = {r.tipo_entrega + "_" + str(r.cantidad) + "_" + str(r.precio) + "_" + str(r.fecha_proceso): r._quarantine_reason
-           for r in _classify_anomalies(df, VALID_TYPES).collect()}
-    # Note: keys collide; rebuild differently by enumerating
     out_list = _classify_anomalies(df, VALID_TYPES).collect()
     reasons = [r._quarantine_reason for r in out_list]
     assert "invalid_fecha_proceso" in reasons
