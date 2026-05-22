@@ -123,26 +123,31 @@ databricks workspace import-dir config "$wsPath/config" --overwrite
 
 ## 4. Adaptar la configuración para apuntar al volumen
 
-El archivo `config/env/databricks.yaml` (que ya está en este repo) tiene las rutas:
+El archivo `config/env/databricks.yaml` (ya en el repo) usa **POSIX path puro** `/Volumes/...`, sin prefijo `dbfs:/`:
 
 ```yaml
 project:
   env: databricks
 paths:
-  bronze: "dbfs:/Volumes/saas_dev/shared/data/bronze"
-  silver: "dbfs:/Volumes/saas_dev/shared/data/silver"
-  gold:   "dbfs:/Volumes/saas_dev/shared/data/gold"
-  quarantine_root: "dbfs:/Volumes/saas_dev/shared/data"
-  quality_logs:    "dbfs:/Volumes/saas_dev/shared/data/shared/quality_logs"
-  raw_deliveries:  "dbfs:/Volumes/saas_dev/shared/raw/global_mobility_data_entrega_productos.csv"
-  raw_materials:   "dbfs:/Volumes/saas_dev/shared/raw/materials_catalog.csv"
+  bronze:          "/Volumes/saas_dev/shared/data/bronze"
+  silver:          "/Volumes/saas_dev/shared/data/silver"
+  gold:            "/Volumes/saas_dev/shared/data/gold"
+  quarantine_root: "/Volumes/saas_dev/shared/data"
+  quality_logs:    "/Volumes/saas_dev/shared/data/shared/quality_logs"
+  raw_deliveries:  "/Volumes/saas_dev/shared/raw/global_mobility_data_entrega_productos.csv"
+  raw_materials:   "/Volumes/saas_dev/shared/raw/materials_catalog.csv"
 ```
 
-`src/saas_pipeline/paths.py` ya respeta el prefijo `dbfs:/` — no concatena con `Path()` (que en Windows convierte `/` a `\` y rompe el URI). El cambio fue mínimo (`_join` con detección de prefijos remotos).
+> **`dbfs:/Volumes/...` está deprecado** para Unity Catalog Volumes. Spark Connect (serverless) acepta sólo POSIX. La CLI `databricks fs cp` aún acepta `dbfs:/Volumes/...` por compatibilidad legada — pero el código del pipeline siempre usa POSIX directo.
 
-`src/saas_pipeline/databricks_entrypoint.py` agrega `SAAS_CONFIG_DIR` al entorno apuntando al directorio donde está `config/` cuando corre en Databricks (sea volumen o workspace path). Esto evita hardcodear paths.
+**Dos cambios mínimos al código** para soportar paths POSIX/UC sin romper el local:
 
-> **Gotcha de serverless:** `__file__` **no está definido** cuando Databricks Serverless corre un `spark_python_task` (lo ejecuta dentro de un ipykernel wrapper). Por eso el entrypoint usa `sys.argv[0]` con fallback a `__file__` sólo si existe.
+1. `src/saas_pipeline/paths.py`: helper `_join` que detecta prefijos POSIX absolutos (`/Volumes/...`) y URIs remotos (`dbfs:/`, `abfss:/`, `s3:/`) y concatena con forward slashes — sin pasar por `pathlib.Path()` (que en Windows convertiría `/` a `\` y rompería el URI).
+2. `src/saas_pipeline/config.py`: respeta la env var `SAAS_CONFIG_DIR` para localizar `config/` cuando el código vive en una ruta no estándar (workspace path, volume).
+
+> **Gotcha de serverless:** `__file__` **no está definido** cuando Databricks Serverless corre un `spark_python_task` (lo ejecuta dentro de un ipykernel wrapper). Por eso `databricks_entrypoint.py` cae a `sys.argv[0]`.
+
+> **Gotcha de ANSI mode:** Databricks corre con `spark.sql.ansi.enabled=true` por default. Eso hace que `to_date('20250230', 'yyyyMMdd')` **lance una excepción** en lugar de devolver `NULL` (como hace el Spark local con ANSI off). El entrypoint setea `spark.conf.set("spark.sql.ansi.enabled","false")` antes de empezar el pipeline para que la semántica sea idéntica local vs Databricks.
 
 ---
 
@@ -435,35 +440,41 @@ Para una iteración futura, lo correcto es modificar el pipeline para usar `save
 
 ---
 
-## 11. Conclusiones
+## 11. Conclusiones del deploy
 
-## 8. Conclusiones del deploy
+### Local vs Free Edition lado a lado
 
 | Aspecto | Local (Spark + Delta) | Databricks Free Edition |
 |---|---|---|
-| Setup | `uv sync` + Java 17 + winutils (Win) | OAuth + CLI v0.296 |
+| Setup | `uv sync` + Java 17 + winutils (Windows) | OAuth + CLI v0.296+ |
 | Compute | Driver-only, `local[2]` | Serverless, autoscala |
-| Storage | Filesystem | UC Volumes + Delta managed |
+| Storage | Filesystem | UC Volumes + Delta managed (después del CTAS) |
 | Idempotencia | Misma (`replaceWhere`, `MERGE`) | Misma |
-| Costo | $0 (recursos propios) | $0 (Free Edition) |
-| Velocidad para PE (~300 filas) | ~40 s | ~25 s (sin contar cold start) |
+| Costo | $0 (recursos propios) | $0 (Free Edition, dentro de quotas) |
+| Velocidad para PE (~300 filas) | ~40 s | ~30 s (sin contar cold start del serverless) |
 
-**Lo que cambió entre local y Databricks:**
+### Lo que cambió entre local y Databricks
 
-1. **Sólo paths.** Cambiamos `data/...` por `dbfs:/Volumes/saas_dev/shared/data/...` en un YAML. Cero líneas de código del pipeline cambian.
-2. **`paths.py` tuvo un retoque** para preservar prefijos de URI (`dbfs:/`, `abfss:/`) en lugar de pasarlos por `Path()` (que en Windows convierte `/` a `\`).
-3. **`databricks_entrypoint.py` nuevo** — wrapper que reusa el `SparkSession.builder.getOrCreate()` del runtime (no levantamos Delta extensions a mano; el runtime ya lo tiene).
-4. **Gotcha de `__file__`.** En serverless es `undefined` (ipykernel wrapper). Fallback a `sys.argv[0]`.
+1. **Paths.** `data/...` → `/Volumes/saas_dev/shared/data/...` en `config/env/databricks.yaml`. Cero líneas del pipeline cambian.
+2. **`paths.py`** detecta prefijos POSIX absolutos (`/Volumes/...`) y URIs remotos (`dbfs:/`, `abfss:/`) para no romperlos con `pathlib.Path()` en Windows.
+3. **`databricks_entrypoint.py`** — wrapper delgado que reusa el `SparkSession.builder.getOrCreate()` del runtime (no levantamos Delta extensions a mano; el runtime ya lo tiene), setea `ANSI=false`, y bootstrappea `sys.path`.
+4. **`pipeline.run_all`** compartido: el orchestration loop (for tenant → bronze → silver → gold) vive en un solo módulo, importado tanto por `cli.py` (local) como por `databricks_entrypoint.py` (Databricks).
 
-**Lo que NO cambió:**
+### Lo que NO cambió
 
 - `bronze.py`, `silver.py`, `gold.py`, `quality.py` — idénticos. Mismas funciones, mismos esquemas, mismos MERGEs.
 - `config/base.yaml` — las reglas de negocio (factor CS→ST, tipos válidos) son las mismas.
 - Tests — los 31 tests del repo cubren la misma lógica que corre en Databricks.
 
-**Aprendizajes prácticos:**
+### Aprendizajes prácticos para replicación
 
-- Free Edition exige catálogos con default storage → SQL warehouse para crearlos, no API REST.
-- `import-dir` convierte `.py` en notebooks por default. Para `spark_python_task` hay que subir cada archivo con `import --format AUTO`.
-- El bug del DAB con Terraform PGP es upstream — el workaround manual (upload + crear job vía API) funciona idéntico.
-- `paths.py` con detección de prefijos remotos fue un cambio chico pero crítico — sin él, en Windows el path queda `dbfs:\Volumes\...` y Spark no lo abre.
+- **Free Edition exige catálogos con default storage** → SQL warehouse para crearlos, no API REST ni CLI.
+- **`import-dir` convierte `.py` en notebooks** por default. Para `spark_python_task` hay que subir archivo por archivo con `workspace import --file --format AUTO`.
+- **El bug del DAB con Terraform PGP es upstream** — el workaround manual (upload + crear job vía `jobs create`) funciona idéntico.
+- **`paths.py` con detección de prefijos POSIX/remoto** fue un cambio chico pero crítico — sin él, en Windows el path queda `\Volumes\...` y Spark no lo abre.
+- **CREATE TABLE LOCATION '/Volumes/...' falla en Free Edition** con `Missing cloud file system scheme`. Usar CTAS (`CREATE OR REPLACE TABLE x AS SELECT * FROM delta.\`...\``).
+- **`__file__` undefined en serverless** + **ANSI mode on** = dos gotchas que se resuelven en el entrypoint, no en el pipeline.
+
+### Resultado neto
+
+El mismo código produjo exactamente los mismos conteos local y en Databricks Free Edition (300 raw → 24 descarte + 9 cuarentena + 267 persistidas). La portabilidad real del pipeline está demostrada con un job que corre en menos de 30 segundos sobre serverless, y las tablas Gold quedaron consultables desde cualquier SQL editor de Databricks.
