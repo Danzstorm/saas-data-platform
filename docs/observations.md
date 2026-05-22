@@ -78,6 +78,21 @@ Técnicamente mi CLI lo soporta — `--start-date 2025-01-01 --end-date 2025-06-
 
 ---
 
+## 7. Tablas UC: writer path-based + registro post-pipeline en lugar de `saveAsTable`
+
+El pipeline escribe Delta a `cfg.paths.bronze/...` (filesystem local) o `/Volumes/saas_dev/shared/...` (UC volume en Databricks). Decisión consciente: **mismo código corre en ambos contextos sin ramas `if env == "databricks"`**.
+
+El costo: en Databricks Free Edition los archivos del volumen no aparecen como tablas en Catalog Explorer hasta que `scripts/register_uc_tables.py` los registra via `CREATE OR REPLACE TABLE ... AS SELECT * FROM delta.\`...\``. Eso introduce duplicación física (volumen + UC managed storage).
+
+**Alternativa que rechacé hoy:** modificar bronze/silver/gold para usar `saveAsTable("saas_dev.bronze_pe.deliveries")` cuando `env=databricks`. Eso elimina la duplicación y obtiene UC managed tables nativas, pero exige:
+- Una rama de código por capa que decide path vs table identifier.
+- Pre-crear las tablas con su schema en UC (saveAsTable falla si la tabla no existe en algunos casos).
+- Cambiar el comportamiento de `replaceWhere` (que necesita schema match en tablas managed vs es flexible en paths).
+
+**Propuesta H2:** introducir un `cfg.uc_table_mode: true` que cambia los writers a `saveAsTable`. Implica refactor de ~1 hora. No es bloqueante para producción — el path actual funciona, la duplicación es marginal con el volumen del dataset que esperamos.
+
+---
+
 ## 6. Ambigüedad: `dim_materials` global vs por tenant
 
 El catálogo `materials_catalog.csv` es **uno solo**, pero la spec habla de `silver_<tenant>.dim_materials` (una dimensión por tenant). Eso significa que cada tenant tiene una copia idéntica del catálogo.
@@ -102,5 +117,6 @@ Pero esto depende del modelo de gobierno del catálogo de materiales. Si negocio
 | 4 | quality_logs sin retención | Discrepancia con propuesta | Esquema preparado, no aplicado |
 | 5 | Backfill no definido | Ambigüedad | CLI lo soporta, doc operativa pendiente |
 | 6 | dim_materials global vs por tenant | Ambigüedad | Duplicación según spec |
+| 7 | UC tables via registro post-pipeline | Trade-off de portabilidad | Funciona, propuesta `saveAsTable` para H2 |
 
 Si tuviera que ranquear cuáles aplicaría primero en H2: **#4** (quality_logs sin retención) primero — porque el costo crece linealmente con el tiempo y es trivial de aplicar. Después **#3** (descartes con auditoría) — porque cierra un hueco de gobierno con costo marginal. **#1** (schema vs catálogo) lo dejaría para cuando aparezca el primer caso real que lo motive, no antes — over-engineering antes de tener el caso de uso es el otro error frecuente.
