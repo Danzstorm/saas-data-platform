@@ -289,7 +289,7 @@ El flujo está en [`docs/onboarding-tenant.md`](docs/onboarding-tenant.md) en de
 5. Smoke run en Databricks dev.
 6. Listo.
 
-No tocás código en ningún paso. Si tenés que tocar código, algo en el paso 1 está faltando o el tenant nuevo tiene un caso especial que merece su propia conversación.
+No se toca código en ningún paso. Si hay que tocar código, algo en el paso 1 está faltando o el tenant nuevo tiene un caso especial que merece su propia conversación.
 
 ---
 
@@ -523,7 +523,7 @@ Lo que **sí incluí como bonus**:
 
 | | |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | 15 diagramas Mermaid con la arquitectura capa por capa. Empezar acá si querés entender el pipeline. |
+| [`docs/architecture.md`](docs/architecture.md) | 15 diagramas Mermaid con la arquitectura capa por capa. Empezar aquí si se quiere entender el pipeline. |
 | [`docs/observations.md`](docs/observations.md) | 6 observaciones a la arquitectura provista. Es lo que se discute en sustentación. |
 | [`docs/infra.md`](docs/infra.md) | Terraform: qué provisiona + snippet del módulo principal. |
 | [`docs/onboarding-tenant.md`](docs/onboarding-tenant.md) | Guía paso a paso para agregar un tenant. |

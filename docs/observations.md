@@ -1,6 +1,6 @@
 # Observaciones a la arquitectura provista
 
-Documento obligatorio según sec 9.2. La consigna fue clara: la arquitectura ya está definida (sec 5) y mi trabajo es implementarla, no rediseñarla. Cuando discrepé con algo, lo dejé acá para discutir en sustentación en lugar de cambiarlo unilateralmente. La sec 12 lo pide así también ("Cambios a la arquitectura provista sin registrarlos en observations.md" es criterio negativo).
+Documento obligatorio según sec 9.2. La consigna fue clara: la arquitectura ya está definida (sec 5) y mi trabajo es implementarla, no rediseñarla. Cuando discrepé con algo, lo dejé documentado aquí para discutir en sustentación en lugar de cambiarlo unilateralmente. La sec 12 lo pide así también ("Cambios a la arquitectura provista sin registrarlos en observations.md" es criterio negativo).
 
 Lo que viene son seis observaciones. Las dos primeras son discrepancias con trade-off explícito. La tercera y cuarta son discrepancias con propuesta concreta de mejora. La quinta y sexta son ambigüedades que tuve que resolver durante la implementación y vale la pena exponer.
 
@@ -36,7 +36,7 @@ Cuando lo implementé pensé en dos opciones: (a) ignorar el doble particionado,
 
 La sec 5.6 dice que las filas con `tipo_entrega` fuera de `{ZPRE, ZVE1, Z04, Z05}` se **descartan** (sólo se contabilizan, no se persisten). La justificación del documento: "COBR y Z99 no pertenecen al alcance analítico".
 
-Acá tengo una discrepancia real. Esa justificación mezcla dos cosas:
+Aquí tengo una discrepancia real. Esa justificación mezcla dos cosas:
 
 1. *Estos tipos no pertenecen al modelo analítico de Silver.* — De acuerdo.
 2. *Estos datos no nos sirven en ningún caso.* — No estoy de acuerdo.

@@ -94,10 +94,10 @@ flowchart LR
 - Repo de este pipeline clonado localmente con `uv sync --extra dev` ya corrido.
 
 ```powershell
-# Autenticá la CLI contra tu workspace (abre browser para OAuth)
+# Autentica la CLI contra el workspace (abre browser para OAuth)
 databricks auth login --host https://dbc-XXXXXXX.cloud.databricks.com
 
-# Verificá
+# Verificar
 databricks current-user me
 ```
 
@@ -138,7 +138,7 @@ Send-Sql "CREATE VOLUME IF NOT EXISTS saas_dev.shared.raw"
 Send-Sql "CREATE VOLUME IF NOT EXISTS saas_dev.shared.code"
 ```
 
-> **Por qué crear schemas por tenant ahora.** En la migración real cada tenant es un schema (`bronze_pe`, `silver_pe`, ...). Acá creamos sólo los de `pe` para el smoke run; agregar el resto es repetir la línea por cada tenant.
+> **Por qué crear schemas por tenant ahora.** En la migración real cada tenant es un schema (`bronze_pe`, `silver_pe`, ...). Aquí creamos sólo los de `pe` para el smoke run; agregar el resto es repetir la línea por cada tenant.
 
 ---
 
@@ -177,7 +177,7 @@ databricks fs ls "dbfs:/Volumes/saas_dev/shared/raw/"
 ```powershell
 $wsPath = "/Workspace/Users/<TU_EMAIL>/saas-data-platform"
 
-# Asegurate de no tener un directorio previo de notebooks
+# Asegurarse de no tener un directorio previo de notebooks
 databricks workspace delete "$wsPath/src" --recursive
 
 # Crear estructura
@@ -268,13 +268,13 @@ Free Edition + serverless requiere un job declarado con `environment_key` (no `c
 }
 ```
 
-Guardalo como `databricks_job.json` y:
+Se guarda como `databricks_job.json` y:
 
 ```powershell
 $jobId = (databricks jobs create --json '@databricks_job.json' | ConvertFrom-Json).job_id
 Write-Host "JOB_ID=$jobId"
 
-# Dispará
+# Disparar el run
 databricks jobs run-now $jobId --timeout 0s
 ```
 

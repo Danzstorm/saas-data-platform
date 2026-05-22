@@ -94,7 +94,7 @@ print("done")
 return out
 ```
 
-**Por qué importa.** En Databricks Jobs los `print` van al driver log pero son difíciles de filtrar y no hay forma de medir si el job procesó 10 o 10 millones de filas. Si el job falla a medias, nadie sabe en qué quedó. Si necesitás contestar "cuánto procesamos ayer" tenés que ir manualmente a la tabla output y contar.
+**Por qué importa.** En Databricks Jobs los `print` van al driver log pero son difíciles de filtrar y no hay forma de medir si el job procesó 10 o 10 millones de filas. Si el job falla a medias, nadie sabe en qué quedó. Si se necesita contestar "cuánto procesamos ayer" hay que ir manualmente a la tabla output y contar.
 
 **Cómo se corrige.** `logging.getLogger(__name__)` con nivel INFO, contexto del tenant + batch_id + conteo de filas, y considerar emitir a `quality_logs` los conteos para que queden auditables. En `good_code.py` está `logger.info(...)`. El repo grande usa Rich para output local + `print` con métricas estructuradas + persistencia en `quality_logs`.
 
@@ -108,4 +108,4 @@ Le pediría que pensara las observaciones en tres dimensiones cuando refactorice
 
 Como tarea de auto-investigación le pediría que leyera la documentación de Delta Lake (en especial `MERGE INTO` y `replaceWhere`), el patrón Medallion de Databricks, y SCD Type 2 con join temporal. También que se diera una vuelta por Catalyst y entendiera por qué `iterrows()` y `pandas` no escalan — entender el "porqué" del API de Spark es lo que evita escribir código así en el futuro. Y lo apuntaría a `docs/architecture.md` del repo grande, donde está lo mismo aplicado.
 
-El estilo de feedback que aplico es: nombrar el problema una vez, mostrar el patrón correcto, y dejar que el siguiente PR lo aplique solo. Si veo la misma corrección dos veces es señal de que el feedback no se entendió, no de que la persona sea lenta — la responsabilidad de explicar mejor es mía. Y cerraría con algo concreto: *"de lo que hablamos, lo más alto-impacto que cambiarías hoy es el patrón Delta + replaceWhere. ¿Querés intentar el refactor y lo revisamos el viernes?"*. Feedback abstracto desaparece; tarea concreta con fecha queda.
+El estilo de feedback que aplico es: nombrar el problema una vez, mostrar el patrón correcto, y dejar que el siguiente PR lo aplique solo. Si veo la misma corrección dos veces es señal de que el feedback no se entendió, no de que la persona sea lenta — la responsabilidad de explicar mejor es mía. Y cerraría con algo concreto: *"de lo que hablamos, lo más alto-impacto que cambiarías hoy es el patrón Delta + replaceWhere. ¿Lo intentas como refactor y lo revisamos el viernes?"*. Feedback abstracto desaparece; tarea concreta con fecha queda.
