@@ -2,7 +2,88 @@
 
 Guía paso a paso para replicar este pipeline en una cuenta de **Databricks Free Edition** (gratuita, sin tarjeta). Los pasos están ordenados como los ejecuté la primera vez — incluyo los desvíos que me obligaron a cambiar de enfoque para que cuando alguien lo replique no se trabe en lo mismo.
 
-> **Estado al cierre de esta entrega:** catálogo + schemas + volumen creados, código + CSVs subidos, job creado, job ejecutándose. Los resultados de la corrida real están al final del documento.
+> **Estado al cierre de esta entrega:** catálogo + schemas + volumen creados, código + CSVs subidos, job creado, run SUCCESS x3 (post-fixes), tablas registradas en UC. Resultados reales en sección 8.
+
+## Mapa visual del deploy
+
+```mermaid
+flowchart TB
+    subgraph PC[💻 Tu PC]
+        direction TB
+        P1[data/raw/*.csv]
+        P2[src/saas_pipeline/*.py]
+        P3[config/env/databricks.yaml]
+        P4[databricks_job.json]
+        P5[scripts/register_uc_tables.py]
+    end
+
+    subgraph DBX[☁️ Databricks Free Edition]
+        direction TB
+
+        subgraph STEP1[Paso 1 · Setup]
+            S1A[Catálogo saas_dev<br/>via SQL warehouse]
+            S1B[Schemas bronze_pe<br/>silver_pe · gold_pe · shared]
+            S1C[Volumes shared.raw<br/>shared.data · shared.code]
+        end
+
+        subgraph STEP2[Paso 2-4 · Upload]
+            S2A[CSVs → /Volumes/saas_dev/shared/raw/]
+            S2B[.py → /Workspace/.../src/saas_pipeline/<br/>como FILE no notebook]
+        end
+
+        subgraph STEP3[Paso 5 · Run]
+            S3A[Job saas_pipeline_dev]
+            S3B[Serverless compute<br/>ANSI=off · environment_key]
+            S3C[Delta files en /Volumes/saas_dev/shared/data/]
+        end
+
+        subgraph STEP4[Paso 6 · Register]
+            S4A[CTAS → tablas managed UC<br/>saas_dev.bronze_pe.deliveries<br/>saas_dev.silver_pe.fact_deliveries<br/>etc.]
+        end
+    end
+
+    P1 -->|databricks fs cp| S2A
+    P2 -->|workspace import --file| S2B
+    P4 -->|jobs create| S3A
+    P5 -->|via SQL warehouse| S4A
+
+    S1A --> S1B --> S1C
+    S2A --> S3B
+    S2B --> S3A
+    S3A --> S3B --> S3C
+    S3C --> S4A
+
+    S4A -.->|SELECT * FROM saas_dev.gold_pe...| QRY[📊 SQL editor<br/>BI · dashboards · ML]
+```
+
+## Comparación visual: local vs Databricks
+
+```mermaid
+flowchart LR
+    subgraph LOC[🖥️ LOCAL]
+        direction TB
+        LU[uv run saas-pipeline run ...]
+        LC[cli.py · Typer + Rich]
+        LS[SparkSession local + Delta JARs<br/>configure_spark_with_delta_pip]
+        LF[Filesystem<br/>data/bronze · silver · gold]
+        LU --> LC --> LS --> LF
+    end
+
+    subgraph DBX[☁️ DATABRICKS]
+        direction TB
+        DU[databricks jobs run-now]
+        DC[databricks_entrypoint.py · argparse + print]
+        DS[SparkSession del runtime<br/>ANSI=off · Delta ya incluido]
+        DF[UC Volume<br/>/Volumes/saas_dev/shared/data]
+        DU --> DC --> DS --> DF
+    end
+
+    LC -.->|misma función| SHARED
+    DC -.->|misma función| SHARED
+    SHARED[saas_pipeline.pipeline.run_all<br/>+ bronze · silver · gold · quality<br/>IDÉNTICO en ambos contextos]
+
+    style SHARED fill:#dfd,stroke:#0a0,stroke-width:3px
+```
 
 ---
 

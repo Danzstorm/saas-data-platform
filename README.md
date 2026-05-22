@@ -297,6 +297,91 @@ No tocás código en ningún paso. Si tenés que tocar código, algo en el paso 
 
 **Estado: deployado, corriendo, tablas en Unity Catalog ✅.** Para el detalle completo (con todos los gotchas y workarounds que tuve que resolver), ver [`docs/databricks-free-edition.md`](docs/databricks-free-edition.md).
 
+### Vista de alto nivel — dónde vive cada cosa
+
+```mermaid
+flowchart LR
+    subgraph LOCAL[Tu PC]
+        L1[data/raw/*.csv<br/>CSVs input]
+        L2[src/saas_pipeline/*.py<br/>código del pipeline]
+        L3[config/*.yaml<br/>config OmegaConf]
+        L4[databricks_job.json<br/>spec del job]
+    end
+
+    subgraph DBX[Databricks Free Edition]
+        direction TB
+        subgraph WS[Workspace Files]
+            W1[saas-data-platform/src/<br/>11 .py · type=FILE]
+        end
+        subgraph UC[Unity Catalog · saas_dev]
+            U1[shared.raw<br/>volume con CSVs]
+            U2[shared.data<br/>volume con Delta outputs]
+            U3[bronze_pe·silver_pe·gold_pe·shared<br/>schemas con tablas managed]
+        end
+        subgraph CMP[Serverless compute]
+            C1[Job saas_pipeline_dev<br/>spark_python_task]
+        end
+    end
+
+    L1 -->|databricks fs cp| U1
+    L2 -->|workspace import --file| W1
+    L4 -->|databricks jobs create| C1
+    W1 -.->|python_file| C1
+    U1 -.->|spark.read.csv| C1
+    C1 -->|escribe Delta| U2
+    U2 -.->|CTAS · register_uc_tables.py| U3
+```
+
+### Flujo de un deploy completo (paso a paso)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Dev (tu PC)
+    participant CLI as databricks CLI
+    participant WH as SQL Warehouse
+    participant WS as Workspace Files
+    participant Vol as UC Volume
+    participant Job as Serverless Job
+    participant Cat as Unity Catalog
+
+    Dev->>CLI: databricks auth login (OAuth)
+    Dev->>WH: Send-Sql 'CREATE CATALOG saas_dev'<br/>+ schemas + volumes
+    WH-->>Dev: SUCCEEDED
+    Dev->>Vol: databricks fs cp data/raw/*.csv<br/>→ /Volumes/saas_dev/shared/raw/
+    Dev->>WS: workspace import --file *.py<br/>→ /Workspace/.../src/saas_pipeline/
+    Dev->>Job: databricks jobs create<br/>--json databricks_job.json
+    Job-->>Dev: job_id
+    Dev->>Job: databricks jobs run-now
+    Job->>Vol: spark.read.csv(raw_deliveries)
+    Job->>Vol: write delta(bronze)
+    Job->>Vol: MERGE silver dim + fact
+    Job->>Vol: write delta(gold)
+    Job->>Vol: write delta(quality_logs)
+    Job-->>Dev: SUCCESS
+    Dev->>WH: register_uc_tables.py<br/>CREATE TABLE x AS SELECT * FROM delta.`/Volumes/...`
+    WH->>Cat: tables registered
+    Dev->>Cat: SELECT * FROM saas_dev.gold_pe.daily_metrics... ✓
+```
+
+### Cómo el job invoca el código (un solo entrypoint, paquete completo)
+
+```mermaid
+flowchart TB
+    JOB[Databricks Job<br/>spark_python_task.python_file]
+    EP[databricks_entrypoint.py<br/>~60 líneas · LAUNCHER]
+    PKG[saas_pipeline/ package<br/>11 .py modules]
+    RUN[pipeline.run_all<br/>orchestration compartida con cli.py local]
+
+    JOB -->|invoca UN file| EP
+    EP -->|1 · bootstrap sys.path<br/>2 · spark.conf ANSI=off<br/>3 · argparse<br/>4 · llama| RUN
+    EP -.->|import| PKG
+    RUN -->|invoca bronze · silver · gold · quality| PKG
+
+    style EP fill:#ffd
+    style RUN fill:#dfd
+```
+
 ### Lo que hay armado en el repo
 
 ```
