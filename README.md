@@ -20,7 +20,7 @@ Es mi entrega de la prueba técnica de Senior Data Engineer para Apex Digital / 
 7. [Tests y linter](#7-tests-y-linter)
 8. [Configuración](#8-configuración)
 9. [Onboarding de un tenant nuevo](#9-onboarding-de-un-tenant-nuevo)
-10. [Despliegue en Databricks](#10-despliegue-en-databricks)
+10. [Despliegue en Databricks Free Edition](#10-despliegue-en-databricks-free-edition)
 11. [Decisiones que tomé y por qué](#11-decisiones-que-tomé-y-por-qué)
 12. [Lo que dejé fuera (con motivo)](#12-lo-que-dejé-fuera-con-motivo)
 13. [Documentos complementarios](#13-documentos-complementarios)
